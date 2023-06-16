@@ -1,0 +1,699 @@
+---
+format:
+  gfm:
+    html-math-method: webtex
+    toc: true
+    toc-title: Contents
+    code-fold: true
+    code-summary: "Show the code"
+editor_options: 
+  chunk_output_type: inline
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  autodep = TRUE,
+  dpi = 200,
+  cache.lazy = FALSE,
+  dev = c("png")
+)
+
+library(tidyverse) 
+library(rethinking)
+library(patchwork)
+library(tidybayes)
+
+source(file.path(here::here(), "R", "utilities.R"))
+source(file.path(here::here(), "R", "setup_analysis.R"))
+
+max_age <- 80
+
+n_cohort <-
+  dataset %>% 
+  select(pid) %>% 
+  distinct() %>% 
+  nrow()
+n_cohort_with_volume <-
+  dataset %>% 
+  filter(!is.na(volume)) %>% 
+  select(pid) %>% 
+  distinct() %>% 
+  nrow()
+n_cohort_with_acuity <-
+  dataset %>% 
+  filter(!is.na(logmar)) %>% 
+  select(pid) %>% 
+  distinct() %>% 
+  nrow()
+
+acuity <-
+  dataset %>% 
+  filter(!is.na(logmar)) %>%
+  select(pid, logmar, laterality, age) 
+
+acuity_for_r2 <-
+  acuity %>%
+  spread(laterality, logmar) 
+
+acuity_r2 <-
+  lm(OD ~ OS, acuity_for_r2) %>%
+  summary() %>%
+  pluck("r.squared")
+
+gvf_for_r2 <-
+  gvf %>% 
+  select(pid, age, laterality, volume) %>% 
+  spread(laterality, volume)
+
+gvf_r2 <-
+  lm(OD ~ OS, gvf_for_r2) %>%
+  summary() %>%
+  pluck("r.squared")
+
+color_values <-
+  c(
+    "black", 
+    colorspace::qualitative_hcl(n = 1, h = c(0, 230), c = 80, l = 60)
+    ) %>% 
+  set_names(unique(dataset$mutation_label))
+
+example_pid <- c("P56", "P12", "P42")
+```
+
+# chmgvf2023
+
+## Setup
+
+First, install the latest version of the `R` programming language, available at <https://www.r-project.org/>.
+
+You can run this file using the R command line, but we recommend that you use [RStudio Desktop](https://posit.co/download/rstudio-desktop/). 
+
+Before you run this analysis and generate the figures for the first time, install the following packages in R:
+
+```{r eval=FALSE}
+install.packages(c("tidyverse", "patchwork", "tidybayes"))
+```
+
+To install the Richard McElreath's `rethinking` package, follow the instructions on [this page](https://github.com/rmcelreath/rethinking). That page also provides links for installing [Stan](https://mc-stan.org/), the probabilistic programming language `rethinking` uses to fit Bayesian models.
+
+## Notes
+
+Stan uses random numbers as part of the model fitting process. Consequently, the estimates you get from re-running this file will vary slightly from those in the paper. This also means that the quantile boundaries in the figures will wiggle a bit as well. 
+
+## Data
+
+The data files have `r n_cohort` patients, `r n_cohort_with_acuity` have visual acuity, and `r n_cohort_with_volume` have GVF volume data.
+
+## Model
+
+```{r figToyExample, fig.width=4*2, fig.height=2.5*2}
+# Construct a couple of example figures to explain the exponential decay model.
+toy_example <- 
+  tibble(lambda = 0.05, delay = 10, baseline = 11, a = 4, b = -5) %>%
+  expand_grid(tibble(age = 0:80)) %>%
+  mutate(
+    V = 
+      exponential_delay(
+        age, 
+        baseline = baseline, 
+        lambda = lambda, 
+        delay = delay
+        )
+    ) %>%
+  mutate(segment = if_else(age < delay, "Pre-onset", "Post-onset")) %>%
+  mutate(xend = lead(age, default = max(age))) %>%
+  mutate(yend = lead(V, default = min(V))) %>%
+  mutate(P = inv_logit(a + b * log(V)))
+
+formula_label_1 <- r"($V \sim Normal(\mu, \sigma)$)"
+formula_label_2 <- r"($\mu = V_{0} e^{-\lambda (T - d)}$)"
+
+formula_label_3 <- r"($V \sim Bernoulli(\theta)$)"
+formula_label_4 <- r"($logit^{-1}(\theta) = a + b \times log(\mu)$)"
+
+p_component_1 <-
+  toy_example %>%
+  ggplot(aes(x = age, y = V)) +
+  geom_segment(aes(x = age, xend = xend, yend = yend, color = segment)) +
+  geom_vline(xintercept = 10, alpha = 0.5, linetype = "dotted") +
+  labs(
+    x = "Age (T)", 
+    y = "Visual field volume (V)", 
+    title = "A. Delayed exponential"
+    ) +
+  scale_color_manual(
+    guide = "none",
+    name = "Phase of disease",
+    values = color_values %>% set_names(c("Post-onset", "Pre-onset"))
+    ) +
+  annotate(
+    "text",
+    x = 40,
+    y = 18/20 * 11,
+    label = latex2exp::TeX(formula_label_1, output = "character"),
+    parse = TRUE,
+    hjust = 0
+  ) +  
+  annotate(
+    "text",
+    x = 40,
+    y = 15/20 * 11,
+    label = latex2exp::TeX(formula_label_2, output = "character"),
+    parse = TRUE,
+    hjust = 0
+  ) +
+  scale_y_continuous(limits = c(0, 11)) 
+
+p_component_2a <-
+  toy_example %>% 
+  ggplot(aes(x = V, y = P)) + 
+  geom_line() + 
+  annotate(
+    "text",
+    x = 11 * 0.5,
+    y = 18 / 20,
+    label = latex2exp::TeX(formula_label_3, output = "character"),
+    parse = TRUE,
+    hjust = 0
+  ) +
+   annotate(
+    "text",
+    x = 11 * 0.5,
+    y = 15 / 20,
+    label = latex2exp::TeX(formula_label_4, output = "character"),
+    parse = TRUE,
+    hjust = 0
+  ) +  
+  labs(
+    x = "Mean Volume (µ)", 
+    y = "Probability of V = 0", 
+    title = "B. Logistic hurdle"
+    )
+
+p_component_2b <-
+  toy_example %>%
+  ggplot(aes(x = age, y = P)) +
+  geom_line() +
+  labs(
+    x = "Age (T)", 
+    y = "Probability of V = 0", 
+    title = "C. Logistic hurdle as a function to time"
+    )
+
+p_component_1 + p_component_2a + p_component_2b + plot_layout(ncol = 2)
+```
+
+
+```{r mhurdle, cache=TRUE}
+# HEADS UP:
+# I commit versions of the figures into the Git repository. Including the 
+# figures let's me compare the effects of changes in code on the visualized 
+# results. However, I don't want the figures changing every time a random
+# number is used. To stabilize figures in the repository, I set the random
+# number "seed" at the top of code chunks which involve figure generation.
+set.seed(7)
+
+mhurdle <-
+  ulam(
+    alist(
+      # Component 1
+      V|V>0 ~ custom(log1m(theta) + normal_lpdf(V | mu, sigma)),
+      # Component 2
+      V|V==0 ~ custom(log(theta)),
+      
+      logit(theta) <- a + b * mu,
+      a ~ dnorm(4, 1),      
+      b ~ dnorm(-5, 1),
+      
+      mu <- 
+        # Baseline volume
+        V_0 * 
+        exp(
+          # Rate
+          -1 * lambda_chm * exp(z_1[S] * sigma_1) * 
+            # Time
+            (T - d * exp(z_2[S] * sigma_2) * exp(z_3[SE] * sigma_3))
+          ),
+      
+      # Prior for baseline derived from volumes based on isopters in Patel et
+      # al. 2015.      
+      V_0 ~ dlnorm(2.42, 0.11), 
+      d ~ dlnorm(log(10), log(1.8)),
+      lambda_chm ~ dbeta(0.4, 2.76),
+ 
+      z_1[S] ~ dnorm(0, 1),     
+      z_2[S] ~ dnorm(0, 1),
+      z_3[SE] ~ dnorm(0, 1),
+
+      sigma ~ dexp(1),
+      sigma_1 ~ dexp(5),      
+      sigma_2 ~ dexp(10),
+      sigma_3 ~ dexp(1),
+      
+      # Per-subject estimates:
+      gq> vector[S]:lambda <<- lambda_chm * exp(z_1 * sigma_1),
+      gq> vector[S]:delay <<- d * exp(z_2 * sigma_2)
+    ),
+    data = gvf_list, 
+    chains = 4, 
+    cores = 4, 
+    log_lik = TRUE, 
+    control = list(adapt_delta = 0.99)
+  )
+```
+
+The fitted model produces estimates of all the parameters:
+
+```{r tabParameterEstimates}
+precis_kable(mhurdle, prob=0.95, depth = 2)
+```
+
+We can compare the predictions made from the prior distribution (that is, before the model sees the data) with the predictions made by the posterior distribution (that is, after that model sees the data):
+
+```{r figPriorPosterior, fig.width=4*2, fig.height=2.5,  cache=TRUE}
+# Sample from the prior
+set.seed(7)
+
+max_age <- 80
+
+## For each parameter, provide an expected indexing variable
+index_names <-
+  c("z_1" = "S", "z_2" = "S", "z_3" = "SE", "delay" = "S", "lambda" = "S")
+## and a mapping between indices
+index_map <-
+  gvf_data %>% 
+  select(S, SE) %>% 
+  distinct() %>% 
+  arrange(S, SE)
+
+mhurdle_prior_population <-
+  tidy_samples(
+    mhurdle, 
+    index_map = index_map, 
+    index_names = index_names, 
+    fun = extract.prior
+    ) %>%
+  # Pull out the estimates that are not specific to individuals
+  select(.draw, b, a, V_0, d, lambda_chm, sigma, sigma_1, sigma_2, sigma_3) %>% 
+  distinct() 
+
+mhurdle_prior_envelope <-
+  mhurdle_prior_population %>%
+  # Assign an ID to each participant
+  mutate(S = 1:n()) %>%  
+  # Simulate values for a single eye from individuals
+  mutate(
+    delay = d * exp(rnorm(n(), 0, sigma_2)) * exp(rnorm(n(), 0, sigma_3)),
+    lambda = lambda_chm * exp(rnorm(n(), 0, sigma_1))
+  ) %>%
+  expand_grid(tibble(T = 0:max_age))
+
+mhurdle_prior_envelope_predictions <-
+  mhurdle_prior_envelope %>% 
+  mutate(
+    fit2 = 
+      exponential_delay(
+        age = T, 
+        baseline = V_0, 
+        lambda = lambda, 
+        delay = delay
+      )
+  ) %>%  
+  # The probability of observing 0 is directly related to the 
+  # fitted exponential curve.
+  mutate(fit = inv_logit(a + b * log(fit2))) %>%
+  mutate(is_zero = rbern(n(), prob = fit)) %>%
+  mutate(prediction = rnorm(n(), fit2, sigma)) %>%
+  mutate(prediction2 = (1 - is_zero) * prediction) 
+
+mhurdle_prior_envelope_predictions_subset <-
+  mhurdle_prior_envelope_predictions %>% 
+  filter(S %in% round(runif(100, min = 1, max = max(S))))
+
+p_prior_envelope <- 
+  mhurdle_prior_envelope_predictions %>% 
+  ggplot(aes(x = T, y = prediction2)) +
+  stat_lineribbon(
+    .width = c(.95, .90, .80, .50),
+    size = 0,
+    show.legend = TRUE
+    ) +
+  scale_y_continuous(limits = c(0, 13)) +
+  labs(x = "Age", y = "Visual field volume", title = "A. Prior") +
+  scale_fill_brewer(name = "Prediction\nInterval")
+
+# Pull out the posterior estimates
+set.seed(7)
+
+mhurdle_posterior_population <-
+  tidy_samples(
+    mhurdle, 
+    index_map = index_map, 
+    index_names = index_names
+    ) %>% 
+  # Pull out the estimates that are not specific to individuals
+  select(.draw, b, a, V_0, d, lambda_chm, sigma, sigma_1, sigma_2, sigma_3) %>% 
+  distinct() 
+
+mhurdle_posterior_population_estimates <-
+  mhurdle_posterior_population %>%
+  # Assign an ID to each participant
+  mutate(S = 1:n()) %>%  
+  # Simulate values for one eye from each individual
+  mutate(
+    delay = d * exp(rnorm(n(), 0, sigma_2)) * exp(rnorm(n(), 0, sigma_3)),
+    lambda = lambda_chm * exp(rnorm(n(), 0, sigma_1))
+  ) 
+
+mhurdle_posterior_envelope <-
+  mhurdle_posterior_population_estimates %>%
+  expand_grid(tibble(T = 0:max_age))
+
+mhurdle_posterior_envelope_posterior <-
+  mhurdle_posterior_envelope %>% 
+  mutate(
+    fit2 = 
+      exponential_delay(
+        age = T, 
+        baseline = V_0, 
+        lambda = lambda, 
+        delay = delay
+      )
+  ) %>%  
+  # The probability of observing 0 is directly related to the 
+  # fitted exponential curve.
+  mutate(fit = inv_logit(a + b * log(fit2))) %>%
+  mutate(is_zero = rbern(n(), prob = fit)) %>%
+  mutate(prediction = rnorm(n(), fit2, sigma)) %>%
+  mutate(prediction2 = (1 - is_zero) * prediction)
+
+mhurdle_posterior_envelope_subset <-
+  mhurdle_posterior_envelope_posterior %>% 
+  filter(S %in% round(runif(100, min = 1, max = max(S))))  
+
+p_posterior_envelope <-
+  mhurdle_posterior_envelope_posterior %>%  
+  ggplot(aes(x = T, y = prediction2)) +
+  stat_lineribbon(
+    .width = c(.95, .90, .80, .50), 
+    size = 0,
+    show.legend = FALSE
+    ) +
+  geom_line(
+    data = gvf_data,
+    mapping = aes(x = T, y = V, group = pid_laterality),
+    alpha = 0.5
+  ) +
+  geom_point(
+    data = gvf_data,
+    mapping = aes(x = T, y = V, group = S),
+    alpha = 0.5,
+    size = 0.5
+  )  +
+  scale_y_continuous(limits = c(0, 13)) +
+  scale_color_manual(name = "Mutation", values = color_values) +
+  scale_shape_manual(name = "Laterality", values = c("OD" = 15, "OS" = 17)) +
+  labs(x = "Age", y = "Visual field volume", title = "B. Posterior") +
+  scale_fill_brewer()
+
+p_prior_envelope + p_posterior_envelope + plot_layout(ncol = 2)
+```
+
+With the posterior distribution, we can visualize progression in a manner similar to [growth charts for children](https://www.cdc.gov/growthcharts/clinical_charts.htm):
+
+```{r figQuantileChart4, fig.width=3*2+1, fig.height=2*2*2}
+point_interval_to_quantile <- function(position, width, value) {
+  quantile_1 <- (1 - width) / 2
+  quantile_2 <- if_else(position == ".lower", quantile_1, 1 - quantile_1) 
+  if_else(position == ".median", .5, quantile_2)
+}
+
+# 2000 draws from the posterior x 81 time points
+mhurdle_posterior_envelope_posterior_quantiles <-
+  mhurdle_posterior_envelope_posterior %>% 
+  select(T, prediction2) %>% 
+  group_by(T) %>% 
+  median_qi(.width = c(.50, .80, .90)) %>% 
+  pivot_longer(
+    cols = c(".lower", ".upper"),
+    names_to = "position", values_to = "value"
+    ) %>%
+  mutate(component =  (1 - .width) / 2) %>%
+  mutate(quantile = if_else(position == ".lower", component, 1 - component)) 
+
+mhurdle_posterior_envelope_posterior_median <-
+  mhurdle_posterior_envelope_posterior_quantiles %>%
+  select(T, prediction2) %>% 
+  rename(value = prediction2) %>%
+  distinct() %>% 
+  mutate(quantile = .5)
+
+mhurdle_posterior_envelope_posterior_quantiles_combined <-
+  mhurdle_posterior_envelope_posterior_quantiles %>% 
+  bind_rows(
+    mhurdle_posterior_envelope_posterior_median
+  ) %>%
+  group_by(quantile) %>%
+  arrange(T, value) %>%
+  mutate(lag_value = lag(value)) %>%
+  filter(lag_value != 0) %>%
+  ungroup() 
+
+quantile_labels <-
+  mhurdle_posterior_envelope_posterior_quantiles_combined %>%
+  group_by(quantile) %>% filter(T >= (max(T) - 5), .preserve = TRUE) %>%
+  summarize(T = mean(T), value = mean(value)) %>%
+  mutate(value = if_else(quantile != .95, 1, value))
+  
+p_posterior_quantiles <-
+  mhurdle_posterior_envelope_posterior_quantiles_combined %>%
+  ggplot(aes(x = T, y = value)) + 
+  geom_line(
+    aes(group = quantile), 
+    color = RColorBrewer::brewer.pal(3, 'Blues')[[3]]
+    ) +
+  geom_line(
+    data = 
+      mhurdle_posterior_envelope_posterior_quantiles_combined %>% 
+      filter(quantile == 0.5),
+    color = RColorBrewer::brewer.pal(3, 'Blues')[[3]],
+    linewidth = 1
+  ) +
+  geom_label(
+    data = quantile_labels,
+    aes(label = quantile * 100),
+    color = "white",
+    size = 1
+  ) +
+  geom_text(
+    data = quantile_labels,
+    aes(label = quantile * 100),
+    size = 2,
+    color = RColorBrewer::brewer.pal(3, 'Blues')[[3]]
+  ) +  
+  labs(x = "Age", y = "Visual field volume (Gn)") +
+  theme_bw()
+
+
+panel_labels <-
+  gvf_data %>% 
+  select(pid, S) %>% 
+  distinct() %>%
+  filter(pid %in% c(example_pid)) %>%
+  mutate(label = paste0(LETTERS[3:5], "."))
+
+max_y <-
+  max(mhurdle_posterior_envelope_posterior_quantiles_combined$value)
+
+gvf_data_for_plot <-
+  gvf_data %>% 
+  inner_join(panel_labels) %>% 
+  mutate(pid = factor(pid, levels = example_pid)) %>%
+  bind_rows(gvf_data %>% mutate(label = "B.", pid = "Cohort")) %>%
+  unite("label_plot", c("label", "pid"), sep = " ", remove = FALSE)
+
+p_posterior_quantiles_4 <-
+  p_posterior_quantiles +
+  geom_line(
+    data = gvf_data_for_plot,
+    aes(group = pid_laterality, y = V),
+    alpha = 0.5
+    # linewidth = 0.2
+  )  +
+  geom_point(
+    data = gvf_data_for_plot,
+    aes(shape = laterality, y = V),
+    alpha = 0.5
+  ) +
+  scale_shape_manual(name = "Laterality", values = c("OD" = 15, "OS" = 17)) +
+  facet_wrap(~ label_plot, ncol = 2, scales='free') +
+  theme(
+    strip.text = element_text(hjust = 0, size = 16),
+    strip.background = element_blank()
+  ) +
+  scale_x_continuous(limits = c(0, max_age)) + 
+  scale_y_continuous(limits = c(0, max_y))
+
+p_posterior_quantiles + 
+  theme(plot.title = element_text(hjust = 0, size = 16)) + 
+  labs(title = "A.") +
+  p_posterior_quantiles_4 +
+  plot_layout(nrow = 2)
+```
+
+We can also derive estimates of the parameters after averaging over (*marginalizing*) the uncertainty in subjects and eyes:
+
+```{r tabModelParameterEstimate}
+parameter_labels <-
+  tibble(
+    parameter = c("V_0", "d", "delay", "lambda_chm", "lambda"),
+    parameter_label = 
+      c("Volume at baseline", "Delay", "Delay (marginal of subject/eye)", 
+        "Lambda", "Lambda (marginal of subject/eye)"),
+    parameter_units = c("Gn", "years", "years", "", "")
+    )
+
+mhurdle_posterior_population_estimates_qi <-
+  mhurdle_posterior_population_estimates %>% 
+  select(V_0, d, lambda_chm, delay, lambda) %>% 
+  purrr::map_dfr(median_qi, .width = 0.95, .id = "parameter") 
+
+mhurdle_posterior_population_estimates_qi <-
+  mhurdle_posterior_population_estimates %>% 
+  select(V_0, d, lambda_chm, delay, lambda) %>% 
+  purrr::map_dfr(median_qi, .width = 0.95, .id = "parameter") 
+
+mhurdle_posterior_population_estimates_stats <-
+  mhurdle_posterior_population_estimates %>%  
+  select(V_0, d, lambda_chm, delay, lambda) %>% 
+  purrr::map_dfr(~tibble(mean = mean(.x), sd = sd(.x)), .id = "parameter")
+
+parameter_labels %>%
+  inner_join(mhurdle_posterior_population_estimates_stats) %>% 
+  inner_join(mhurdle_posterior_population_estimates_qi) %>%
+  select(parameter_label, parameter_units, mean, sd, y, ymin, ymax) %>%
+  set_names(
+    c("Parameter", "Units", "Mean", "SD", "Median", "2.5 %", "97.5 %")
+    ) %>%
+  knitr::kable()
+```
+
+```{r }
+set.seed(7)
+
+mhurdle_samples <-
+  tidy_samples(
+    mhurdle, 
+    index_map = index_map, 
+    index_names = index_names
+    ) %>%
+  expand_grid(tibble(T = 0:max_age)) %>%
+  mutate(
+    fit2 = 
+      exponential_delay(
+        age = T, 
+        baseline = V_0, 
+        lambda = lambda, 
+        delay = delay
+      )
+  ) %>% 
+  # The probability of observing 0 is directly related to the 
+  # fitted exponential curve.
+  mutate(fit = inv_logit(a + b * log(fit2))) %>%
+  mutate(is_zero = rbern(n(), prob = fit)) %>%
+  mutate(prediction = rnorm(n(), fit2, sigma)) %>%
+  mutate(prediction2 = (1 - is_zero) * prediction) 
+
+mhurdle_samples_subset <-
+  mhurdle_samples %>% 
+  group_by(S) %>% 
+  filter(.draw %in% round(runif(100, min = 1, max = max(.draw))))
+
+person_labels <- 
+  mhurdle_samples %>% 
+  select(S) %>% 
+  distinct() %>% 
+  mutate(x = 70, y = 12.5) %>%
+  inner_join(
+    gvf_data %>% select(pid, S) %>% distinct()
+  )
+```
+
+We can plot the predicted fits for individual subjects:
+
+```{r figIndividualFits, fig.width=10, fig.height=7, cache=TRUE}
+gvf_data_s_se <-
+  gvf_data %>% 
+  select(pid, S, SE, laterality) %>% 
+  distinct() %>% 
+  arrange(S, SE) %>%
+  expand_grid(T = 0:max_age) %>%
+  mutate(.row_id = 1:n())
+
+mhurdle_samples_test_2 <-
+  tidy_samples(
+    mhurdle, 
+    index_map = index_map, 
+    index_names = index_names
+    )
+
+mhurdle_samples_test_2_full_parameters <-
+  mhurdle_samples_test_2 %>% 
+  mutate(lambda_s = lambda_chm * exp(z_1 * sigma_1)) %>%
+  mutate(delay_s = d * exp(z_2 * sigma_2)) %>% 
+  mutate(delay_se = delay_s * exp(z_3 * sigma_3)) 
+
+mhurdle_samples_test_2_full <-
+  mhurdle_samples_test_2_full_parameters%>% 
+  inner_join(gvf_data_s_se, by = c("S", "SE")) %>% 
+  mutate(mu = V_0 * exp(-1 * lambda_s * (T - delay_se))) %>%
+  mutate(fit1 = exponential_delay(T, V_0, lambda_s, delay_se))
+
+mhurdle_samples_test_2_full_parameters_summary <-
+  mhurdle_samples_test_2_full_parameters %>% 
+  group_by(S) %>% 
+  summarize(
+    delay_se = median(delay_se) %>% round(digits = 1), 
+    lambda_s = median(lambda_s) %>% round(digits = 2)
+    ) %>%
+  inner_join(gvf_data_s_se %>% select(pid, S) %>% distinct())
+
+mhurdle_samples_test_2_full %>% 
+  filter(.draw %in% 1:20) %>%
+  ggplot(aes(x = T, y = fit1)) + 
+  geom_line(
+    aes(group = paste(S, laterality, .draw), color = laterality),
+    alpha = 0.75,
+    linewidth = 0.25
+  ) + 
+  facet_wrap(~pid) +
+  scale_y_continuous(limits = c(0, 13)) +
+  geom_point(
+    data = gvf_data,
+    mapping = aes(x = T, y = V, group = pid, shape = laterality),
+    alpha = 0.5,
+    color = "black"
+  ) +
+  geom_text(
+    data = mhurdle_samples_test_2_full_parameters_summary,
+    mapping = aes(x = 45, y = 12, label = paste('lambda', "==", lambda_s)),
+    parse = TRUE,
+    hjust = 0,
+    size = 3
+  ) +
+  geom_text(
+    data = mhurdle_samples_test_2_full_parameters_summary,
+    mapping = aes(x = 45, y = 8, label =  paste('d', "==", delay_se)),
+    parse = TRUE,
+    hjust = 0,
+    size = 3
+  ) +  
+  theme(strip.background = element_blank()) +
+  scale_color_brewer(name = "Laterality", palette = "Set2") +
+  scale_shape_manual(name = "Laterality", values = c("OD" = 15, "OS" = 17)) +
+  labs(x = "Age", y = "Visual field volume (Gn)")
+```
