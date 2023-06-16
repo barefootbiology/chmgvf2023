@@ -6,6 +6,45 @@
   - <a href="#model" id="toc-model">Model</a>
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
+
+# chmgvf2023
+
+This analysis fits a Bayesian model of Goldmann visual field (GVF)
+volume data for a cohort of patients with choroideremia. The analysis is
+reported in:
+
+> Adam P. DeLuca, S. Scott Whitmore, Nicole J. Tatro, Jeaneen L. Andorf,
+> Ben P. Faga, Laurel A. Faga, Malia M. Collins, Meagan A. Luse, Beau J.
+> Fenner, Edwin M. Stone, Todd E. Scheetz. “Using Goldmann visual field
+> volume to track disease progression in choroideremia.” (manuscript
+> submitted)
+
+## Setup
+
+First, install the latest version of the `R` programming language,
+available at <https://www.r-project.org/>.
+
+You can run this file using the R command line, but we recommend that
+you use [RStudio Desktop](https://posit.co/download/rstudio-desktop/).
+
+Before you run this analysis and generate the figures for the first
+time, install the following packages in R:
+
+<details>
+<summary>Show the code</summary>
+
+``` r
+install.packages(c("tidyverse", "patchwork", "tidybayes"))
+```
+
+</details>
+
+To install the Richard McElreath’s `rethinking` package, follow the
+instructions on [this page](https://github.com/rmcelreath/rethinking).
+That page also provides links for installing
+[Stan](https://mc-stan.org/), the probabilistic programming language
+`rethinking` uses to fit Bayesian models.
+
 <details>
 <summary>Show the code</summary>
 
@@ -82,34 +121,6 @@ example_pid <- c("P56", "P12", "P42")
 ```
 
 </details>
-
-# chmgvf2023
-
-## Setup
-
-First, install the latest version of the `R` programming language,
-available at <https://www.r-project.org/>.
-
-You can run this file using the R command line, but we recommend that
-you use [RStudio Desktop](https://posit.co/download/rstudio-desktop/).
-
-Before you run this analysis and generate the figures for the first
-time, install the following packages in R:
-
-<details>
-<summary>Show the code</summary>
-
-``` r
-install.packages(c("tidyverse", "patchwork", "tidybayes"))
-```
-
-</details>
-
-To install the Richard McElreath’s `rethinking` package, follow the
-instructions on [this page](https://github.com/rmcelreath/rethinking).
-That page also provides links for installing
-[Stan](https://mc-stan.org/), the probabilistic programming language
-`rethinking` uses to fit Bayesian models.
 
 ## Notes
 
