@@ -1442,6 +1442,8 @@ panel_labels <-
   select(pid, S) %>% 
   distinct() %>%
   filter(pid %in% c(example_pid)) %>%
+  mutate(pid = factor(pid, levels = example_pid)) %>%
+  arrange(pid) %>%
   mutate(label = paste0(LETTERS[3:5], "."))
 
 max_y <-
